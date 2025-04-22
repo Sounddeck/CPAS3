@@ -1,0 +1,588 @@
+"""Agent Module UI for CPAS Desktop"""
+import sys
+import os
+import time
+import threading
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QComboBox,
+    QLabel, QPushButton, QTabWidget, QFormLayout, QLineEdit, 
+    QSplitter, QGroupBox, QMessageBox
+)
+from PyQt6.QtCore import Qt, pyqtSlot, QTimer
+
+# Import our box drawing utilities
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from modules.ui.box_drawing import draw_simple_box, draw_double_box
+
+# Import agent manager
+from modules.agent.agent_manager import AgentManager
+from modules.agent.agents.base_agent import AgentType
+
+class AgentModule(QWidget):
+    """Agent module for managing AI agents"""
+    
+    def __init__(self):
+        print("DEBUG: Creating AgentModule instance")
+        super().__init__()
+        
+        # Create the agent manager
+        self.agent_manager = AgentManager()
+        
+        # Setup UI
+        self.setup_ui()
+        
+        # Initially populate the UI
+        self.update_agent_list()
+        self.refresh_agent_display()
+        
+        # Setup timer for periodic UI updates
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(self.refresh_agent_display)
+        self.update_timer.start(2000)  # Update every 2 seconds
+        
+        print("DEBUG: AgentModule instance created successfully")
+    
+    def setup_ui(self):
+        """Set up the UI components"""
+        # Main layout
+        main_layout = QVBoxLayout()
+        self.setLayout(main_layout)
+        
+        # Header
+        header_label = QLabel("Agent Management Console")
+        header_label.setStyleSheet("font-size: 24px; font-weight: bold; color: white; margin-bottom: 5px;")
+        main_layout.addWidget(header_label)
+        
+        # Create a splitter for resizable sections
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        main_layout.addWidget(splitter, 1)
+        
+        # Top section - Agent status display with box drawing
+        top_widget = QWidget()
+        top_layout = QVBoxLayout(top_widget)
+        
+        self.agent_display = QTextEdit()
+        self.agent_display.setReadOnly(True)
+        self.agent_display.setStyleSheet("""
+            QTextEdit {
+                background-color: #0C0C0C;
+                color: #FFFFFF;
+                border: 1px solid #3F3F46;
+                font-family: "Courier New", monospace;
+                font-size: 14px;
+                line-height: 1.2;
+            }
+        """)
+        top_layout.addWidget(self.agent_display)
+        
+        # Add some initial content to the display
+        self.agent_display.setText(draw_simple_box(80, 15, "Agent Status", "Loading agent information..."))
+        
+        splitter.addWidget(top_widget)
+        
+        # Bottom section - Controls
+        bottom_widget = QWidget()
+        bottom_layout = QVBoxLayout(bottom_widget)
+        
+        # Create tabs for different agent operations
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #3F3F46;
+                background-color: #1E1E1E;
+            }
+            QTabBar::tab {
+                background-color: #252526;
+                color: #CCCCCC;
+                padding: 8px 16px;
+                margin-right: 2px;
+            }
+            QTabBar::tab:selected {
+                background-color: #0E639C;
+                color: white;
+            }
+        """)
+        
+        # Agent List tab
+        agent_list_tab = QWidget()
+        agent_list_layout = QVBoxLayout(agent_list_tab)
+        
+        # Agent selection combo box
+        agent_select_layout = QHBoxLayout()
+        agent_select_layout.addWidget(QLabel("Select Agent:"))
+        self.agent_combo = QComboBox()
+        self.agent_combo.currentIndexChanged.connect(self.on_agent_selected)
+        agent_select_layout.addWidget(self.agent_combo)
+        agent_select_layout.addStretch()
+        agent_list_layout.addLayout(agent_select_layout)
+        
+        # Agent actions
+        button_layout = QHBoxLayout()
+        
+        # Add buttons
+        buttons = [
+            ("Create Agent", self.on_create_agent),
+            ("Start Agent", self.on_start_agent),
+            ("Stop Agent", self.on_stop_agent),
+            ("Delete Agent", self.on_delete_agent)
+        ]
+        
+        for text, handler in buttons:
+            button = QPushButton(text)
+            button.setStyleSheet("""
+                QPushButton {
+                    background-color: #0E639C;
+                    color: white;
+                    border: none;
+                    padding: 8px 16px;
+                    font-size: 14px;
+                    min-width: 120px;
+                    margin: 5px;
+                }
+                QPushButton:hover {
+                    background-color: #1177BB;
+                }
+                QPushButton:pressed {
+                    background-color: #0D5C8F;
+                }
+            """)
+            button.clicked.connect(handler)
+            button_layout.addWidget(button)
+        
+        agent_list_layout.addLayout(button_layout)
+        self.tabs.addTab(agent_list_tab, "Agent List")
+        
+        # Configuration tab
+        config_tab = QWidget()
+        config_layout = QFormLayout(config_tab)
+        
+        # Agent configuration fields
+        self.name_field = QLineEdit()
+        config_layout.addRow("Name:", self.name_field)
+        
+        self.type_combo = QComboBox()
+        for agent_type in AgentType:
+            self.type_combo.addItem(agent_type.value)
+        config_layout.addRow("Type:", self.type_combo)
+        
+        self.desc_field = QLineEdit()
+        config_layout.addRow("Description:", self.desc_field)
+        
+        # Save button
+        save_button = QPushButton("Save Configuration")
+        save_button.clicked.connect(self.on_save_config)
+        save_button.setStyleSheet("""
+            QPushButton {
+                background-color: #0E639C;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                font-size: 14px;
+            }
+        """)
+        config_layout.addRow("", save_button)
+        
+        self.tabs.addTab(config_tab, "Configuration")
+        
+        # Tasks tab
+        tasks_tab = QWidget()
+        tasks_layout = QVBoxLayout(tasks_tab)
+        
+        # Task form
+        task_form = QGroupBox("Add Task")
+        task_form_layout = QFormLayout(task_form)
+        
+        self.task_name = QLineEdit()
+        task_form_layout.addRow("Task Name:", self.task_name)
+        
+        add_task_button = QPushButton("Add Task")
+        add_task_button.clicked.connect(self.on_add_task)
+        task_form_layout.addRow("", add_task_button)
+        
+        tasks_layout.addWidget(task_form)
+        
+        # Task display area
+        self.task_display = QTextEdit()
+        self.task_display.setReadOnly(True)
+        self.task_display.setStyleSheet("""
+            QTextEdit {
+                background-color: #0C0C0C;
+                color: #CCCCCC;
+                font-family: monospace;
+            }
+        """)
+        tasks_layout.addWidget(self.task_display)
+        
+        self.tabs.addTab(tasks_tab, "Tasks")
+        
+        # Logs tab
+        logs_tab = QWidget()
+        logs_layout = QVBoxLayout(logs_tab)
+        
+        self.logs_display = QTextEdit()
+        self.logs_display.setReadOnly(True)
+        self.logs_display.setStyleSheet("""
+            QTextEdit {
+                background-color: #0C0C0C;
+                color: #AAAAAA;
+                font-family: monospace;
+            }
+        """)
+        logs_layout.addWidget(self.logs_display)
+        
+        self.tabs.addTab(logs_tab, "Logs")
+        
+        bottom_layout.addWidget(self.tabs)
+        splitter.addWidget(bottom_widget)
+        
+        # Set initial splitter sizes
+        splitter.setSizes([500, 300])
+        
+        # Set dark mode style for the entire widget
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #1E1E1E;
+                color: #FFFFFF;
+            }
+            QLabel {
+                color: #CCCCCC;
+            }
+            QGroupBox {
+                border: 1px solid #3F3F46;
+                margin-top: 12px;
+                padding-top: 22px;
+            }
+            QGroupBox::title {
+                color: #FFFFFF;
+                subcontrol-position: top left;
+                padding-left: 10px;
+                padding-right: 10px;
+            }
+        """)
+        
+        # Store currently selected agent ID
+        self.current_agent_id = None
+    
+    def update_agent_list(self):
+        """Update the agent list in the combo box"""
+        self.agent_combo.clear()
+        
+        agents = self.agent_manager.get_agents()
+        self.agent_combo.addItem("Select an agent...", None)
+        
+        for agent_id, agent_info in agents.items():
+            self.agent_combo.addItem(f"{agent_info['name']} ({agent_info['status']})", agent_id)
+    
+    def refresh_agent_display(self):
+        """Refresh the agent display with current information"""
+        agents_dict = self.agent_manager.get_agents()
+        agents = list(agents_dict.values())
+        
+        if not agents:
+            # No agents to display
+            self.agent_display.setText(draw_simple_box(80, 15, "No Agents Available", 
+                                                     "Click 'Create Agent' to add a new agent."))
+            # Clear logs and tasks display
+            self.logs_display.clear()
+            self.task_display.clear()
+            return
+        
+        # Create a box showing all agents status
+        agent_status = ""
+        for agent in agents:
+            status_symbol = "●" if agent["status"] == "Running" else "○" if agent["status"] == "Idle" else "✕"
+            agent_status += f"{status_symbol} {agent['name']}: {agent['status']}\n"
+        
+        # Build the layout
+        width = 80
+        height = 20
+        lines = []
+        
+        # Top border of outer box
+        lines.append("┌" + "─" * (width - 2) + "┐")
+        
+        # System metrics section
+        sys_metrics = self.agent_manager.get_system_metrics()
+        if "error" not in sys_metrics:
+            metrics_text = f"CPU: {sys_metrics['cpu']}%  |  "
+            metrics_text += f"Memory: {sys_metrics['memory']['percent']}% "
+            metrics_text += f"({int(sys_metrics['memory']['used_mb'])} MB / {int(sys_metrics['memory']['total_mb'])} MB)  |  "
+            metrics_text += f"Disk: {sys_metrics['disk']['percent']}% "
+            metrics_text += f"({int(sys_metrics['disk']['used_gb'])} GB / {int(sys_metrics['disk']['total_gb'])} GB)"
+        else:
+            metrics_text = "System metrics unavailable"
+        
+        metrics_box = draw_simple_box(width - 6, 3, "System Resources", metrics_text).split("\n")
+        for line in metrics_box:
+            lines.append("│ " + line + " │")
+        
+        # Agent Status section
+        status_box = draw_simple_box(width - 6, 7, "Agent Status", agent_status).split("\n")
+        for line in status_box:
+            lines.append("│ " + line + " │")
+        
+        # Selected agent details
+        if self.current_agent_id:
+            agent = None
+            for a in agents:
+                if a["id"] == self.current_agent_id:
+                    agent = a
+                    break
+            
+            if agent:
+                # Create columns for agent details
+                col_width = (width - 7) // 2
+                
+                # Left column - Agent Info
+                agent_info = f"Name: {agent['name']}\n"
+                agent_info += f"Type: {agent['type']}\n"
+                agent_info += f"Status: {agent['status']}\n"
+                agent_info += f"Created: {time.strftime('%Y-%m-%d %H:%M', time.localtime(agent['created_at']))}\n"
+                agent_info += f"CPU: {agent['resources']['cpu']:.1f}%\n"
+                agent_info += f"Memory: {agent['resources']['memory']:.1f} MB"
+                
+                left_box = draw_simple_box(col_width, 9, "Details", agent_info).split("\n")
+                
+                # Right column - Agent Tasks
+                tasks_info = f"Pending Tasks: {agent['pending_tasks']}\n"
+                tasks_info += f"Total Tasks: {agent['tasks']}\n"
+                
+                # Get agent logs for more info
+                if self.current_agent_id:
+                    logs = self.agent_manager.get_agent_logs(self.current_agent_id, limit=5)
+                    if logs:
+                        tasks_info += "\nRecent Activity:\n"
+                        for log in logs[-3:]:
+                            time_str = time.strftime("%H:%M:%S", time.localtime(log["timestamp"]))
+                            tasks_info += f"{time_str}: {log['message']}\n"
+                
+                right_box = draw_simple_box(col_width, 9, "Activity", tasks_info).split("\n")
+                
+                # Add columns side by side
+                for i in range(max(len(left_box), len(right_box))):
+                    left_line = left_box[i] if i < len(left_box) else " " * col_width
+                    right_line = right_box[i] if i < len(right_box) else " " * col_width
+                    lines.append("│ " + left_line + " │ " + right_line + " │")
+            else:
+                # No agent selected
+                no_agent_box = draw_simple_box(width - 6, 9, "Agent Not Found", "The selected agent no longer exists.").split("\n")
+                for line in no_agent_box:
+                    lines.append("│ " + line + " │")
+        else:
+            # No agent selected
+            no_agent_box = draw_simple_box(width - 6, 9, "No Agent Selected", "Select an agent from the list below.").split("\n")
+            for line in no_agent_box:
+                lines.append("│ " + line + " │")
+        
+        # Bottom border
+        lines.append("└" + "─" * (width - 2) + "┘")
+        
+        # Set the text
+        self.agent_display.setText("\n".join(lines))
+        
+        # Update logs if an agent is selected
+        if self.current_agent_id:
+            logs = self.agent_manager.get_agent_logs(self.current_agent_id, limit=50)
+            if logs:
+                log_text = ""
+                for log in logs:
+                    time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(log["timestamp"]))
+                    level = log.get("level", "INFO")
+                    message = log.get("message", "")
+                    log_text += f"{time_str} [{level}] {message}\n"
+                self.logs_display.setText(log_text)
+            else:
+                self.logs_display.setText("No logs available")
+    
+    @pyqtSlot(int)
+    def on_agent_selected(self, index):
+        """Handle agent selection from combo box"""
+        if index <= 0:
+            self.current_agent_id = None
+        else:
+            self.current_agent_id = self.agent_combo.itemData(index)
+        
+        # Update fields if agent is selected
+        if self.current_agent_id:
+            agent = self.agent_manager.get_agent(self.current_agent_id)
+            if agent:
+                self.name_field.setText(agent.name)
+                self.type_combo.setCurrentText(agent.type.value)
+                self.desc_field.setText(agent.description)
+        
+        self.refresh_agent_display()
+    
+    @pyqtSlot()
+    def on_create_agent(self):
+        """Handle create agent button click"""
+        try:
+            # Create a basic agent
+            name = f"Agent {len(self.agent_manager.get_agents()) + 1}"
+            agent_type = self.type_combo.currentText()
+            description = "New agent created from Agent Module"
+            
+            agent_id = self.agent_manager.create_agent(
+                name=name,
+                agent_type=agent_type,
+                description=description
+            )
+            
+            # Update UI
+            self.update_agent_list()
+            
+            # Select the new agent
+            for i in range(self.agent_combo.count()):
+                if self.agent_combo.itemData(i) == agent_id:
+                    self.agent_combo.setCurrentIndex(i)
+                    break
+            
+            # Refresh display
+            self.refresh_agent_display()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error Creating Agent", f"An error occurred: {str(e)}")
+    
+    @pyqtSlot()
+    def on_start_agent(self):
+        """Handle start agent button click"""
+        if not self.current_agent_id:
+            QMessageBox.warning(self, "No Agent Selected", "Please select an agent first.")
+            return
+        
+        try:
+            if self.agent_manager.start_agent(self.current_agent_id):
+                # Update UI
+                self.update_agent_list()
+                self.refresh_agent_display()
+            else:
+                QMessageBox.warning(self, "Failed to Start", "Failed to start the agent. Check logs for details.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error Starting Agent", f"An error occurred: {str(e)}")
+    
+    @pyqtSlot()
+    def on_stop_agent(self):
+        """Handle stop agent button click"""
+        if not self.current_agent_id:
+            QMessageBox.warning(self, "No Agent Selected", "Please select an agent first.")
+            return
+        
+        try:
+            if self.agent_manager.stop_agent(self.current_agent_id):
+                # Update UI
+                self.update_agent_list()
+                self.refresh_agent_display()
+            else:
+                QMessageBox.warning(self, "Failed to Stop", "Failed to stop the agent. Check logs for details.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error Stopping Agent", f"An error occurred: {str(e)}")
+    
+    @pyqtSlot()
+    def on_delete_agent(self):
+        """Handle delete agent button click"""
+        if not self.current_agent_id:
+            QMessageBox.warning(self, "No Agent Selected", "Please select an agent first.")
+            return
+        
+        # Confirm deletion
+        confirm = QMessageBox.question(
+            self, 
+            "Confirm Deletion",
+            f"Are you sure you want to delete this agent?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if confirm == QMessageBox.StandardButton.Yes:
+            try:
+                if self.agent_manager.delete_agent(self.current_agent_id):
+                    # Reset selection
+                    self.current_agent_id = None
+                    
+                    # Update UI
+                    self.update_agent_list()
+                    self.refresh_agent_display()
+                else:
+                    QMessageBox.warning(self, "Failed to Delete", "Failed to delete the agent. Check logs for details.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error Deleting Agent", f"An error occurred: {str(e)}")
+    
+    @pyqtSlot()
+    def on_save_config(self):
+        """Handle save configuration button click"""
+        if not self.current_agent_id:
+            QMessageBox.warning(self, "No Agent Selected", "Please select an agent first.")
+            return
+        
+        try:
+            agent = self.agent_manager.get_agent(self.current_agent_id)
+            if agent:
+                # Update agent properties
+                agent.name = self.name_field.text()
+                agent.description = self.desc_field.text()
+                
+                # Note: Changing agent type is not supported - would need to recreate agent
+                
+                # Update UI
+                self.update_agent_list()
+                self.refresh_agent_display()
+                
+                QMessageBox.information(self, "Configuration Saved", "Agent configuration has been updated.")
+            else:
+                QMessageBox.warning(self, "Agent Not Found", "The selected agent no longer exists.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error Saving Configuration", f"An error occurred: {str(e)}")
+    
+    @pyqtSlot()
+    def on_add_task(self):
+        """Handle add task button click"""
+        if not self.current_agent_id:
+            QMessageBox.warning(self, "No Agent Selected", "Please select an agent first.")
+            return
+        
+        task_name = self.task_name.text().strip()
+        if not task_name:
+            QMessageBox.warning(self, "Invalid Task", "Please enter a task name.")
+            return
+        
+        try:
+            task_id = self.agent_manager.add_task(self.current_agent_id, task_name)
+            if task_id:
+                QMessageBox.information(self, "Task Added", f"Task '{task_name}' has been added to the agent.")
+                self.task_name.clear()
+                self.update_task_display()
+            else:
+                QMessageBox.warning(self, "Failed to Add Task", "Failed to add task to the agent.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error Adding Task", f"An error occurred: {str(e)}")
+    
+    def update_task_display(self):
+        """Update the task display area"""
+        if not self.current_agent_id:
+            self.task_display.clear()
+            return
+        
+        agent = self.agent_manager.get_agent(self.current_agent_id)
+        if not agent:
+            self.task_display.clear()
+            return
+        
+        tasks_text = ""
+        for task in agent.tasks:
+            created_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(task["created_at"]))
+            tasks_text += f"ID: {task['id']}\n"
+            tasks_text += f"Name: {task['name']}\n"
+            tasks_text += f"Status: {task['status']}\n"
+            tasks_text += f"Created: {created_time}\n"
+            
+            if task["completed_at"]:
+                completed_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(task["completed_at"]))
+                tasks_text += f"Completed: {completed_time}\n"
+            
+            if task["result"]:
+                tasks_text += f"Result: {task['result']}\n"
+            
+            tasks_text += "--------------------\n"
+        
+        if not tasks_text:
+            tasks_text = "No tasks found for this agent."
+        
+        self.task_display.setText(tasks_text)

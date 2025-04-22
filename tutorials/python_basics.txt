@@ -1,0 +1,7 @@
+Welcome to Python Basics!
+- Variables
+- Loops
+- Functions
+
+Watch this video: https://youtu.be/dQw4w9WgXcQ
+

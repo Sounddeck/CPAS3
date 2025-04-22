@@ -1,0 +1,119 @@
+"""
+Task Agent implementation for CPAS3
+Handles task automation
+"""
+
+import time
+import logging
+from typing import Dict, Any, List
+from .base_agent import Agent, AgentType, AgentStatus
+
+logger = logging.getLogger(__name__)
+
+class TaskAgent(Agent):
+    """Agent that automates tasks"""
+    
+    def __init__(self, name: str, description: str = "Task automation agent"):
+        """Initialize a new task agent"""
+        super().__init__(name=name, agent_type=AgentType.TASK, description=description)
+        self.task_history = []
+        
+    def initialize(self, config: Dict[str, Any] = None) -> bool:
+        """Initialize the agent with configuration"""
+        if config and "scheduled_tasks" in config:
+            for task in config["scheduled_tasks"]:
+                self.add_task(task["name"], task["data"])
+        
+        return super().initialize(config)
+    
+    def add_scheduled_task(self, task_name: str, schedule: str, task_data: Dict[str, Any] = None) -> str:
+        """Add a scheduled task"""
+        task_data = task_data or {}
+        task_data["schedule"] = schedule
+        
+        task_id = self.add_task(task_name, task_data)
+        self.add_log_entry(f"Scheduled task added: {task_name}, schedule: {schedule}")
+        return task_id
+    
+    def execute_task(self, task_id: str) -> bool:
+        """Manually execute a specific task"""
+        task = self.get_task(task_id)
+        if not task:
+            logger.error(f"Task not found: {task_id}")
+            return False
+            
+        self.update_task_status(task_id, "pending")
+        self.add_log_entry(f"Manual execution triggered for task: {task['name']}")
+        return True
+    
+    def get_task_history(self) -> List[Dict[str, Any]]:
+        """Get the history of completed tasks"""
+        return self.task_history
+    
+    def _process_pending_tasks(self) -> None:
+        """Process pending tasks with enhanced functionality"""
+        for task in self.tasks:
+            if task["status"] == "pending":
+                self.add_log_entry(f"Processing task: {task['name']}")
+                task["status"] = "processing"
+                task["updated_at"] = time.time()
+                
+                try:
+                    # Check if this is a scheduled task
+                    if "schedule" in task["data"]:
+                        self.add_log_entry(f"Scheduled task executing: {task['name']}")
+                    
+                    # Here we would implement the actual task execution
+                    # For now, we'll just simulate it
+                    time.sleep(2)
+                    
+                    if task["name"] == "file_organization":
+                        self.add_log_entry("Organizing files in directories")
+                        # Simulate file organization logic
+                        
+                    elif task["name"] == "data_backup":
+                        self.add_log_entry("Backing up data to specified location")
+                        # Simulate backup logic
+                        
+                    elif task["name"] == "system_check":
+                        self.add_log_entry("Performing system health check")
+                        # Simulate system check
+                        
+                    # Record result
+                    result = f"Successfully executed task: {task['name']}"
+                    
+                    # Update task status
+                    task["status"] = "completed"
+                    task["completed_at"] = time.time()
+                    task["result"] = result
+                    task["updated_at"] = time.time()
+                    
+                    # Add to history
+                    self.task_history.append({
+                        "id": task["id"],
+                        "name": task["name"],
+                        "executed_at": task["completed_at"],
+                        "success": True
+                    })
+                    
+                    self.add_log_entry(f"Task completed: {task['name']}")
+                    
+                except Exception as e:
+                    task["status"] = "failed"
+                    task["completed_at"] = time.time()
+                    task["result"] = str(e)
+                    task["updated_at"] = time.time()
+                    
+                    # Add to history
+                    self.task_history.append({
+                        "id": task["id"],
+                        "name": task["name"],
+                        "executed_at": task["completed_at"],
+                        "success": False,
+                        "error": str(e)
+                    })
+                    
+                    self.add_log_entry(f"Task failed: {task['name']} - {str(e)}", level="ERROR")
+                
+                # Only process one task at a time
+                break

@@ -1,0 +1,126 @@
+"""
+Search Agent implementation for CPAS3
+Handles information search and retrieval
+"""
+
+import time
+import random
+import logging
+from typing import Dict, Any, List
+from .base_agent import Agent, AgentType, AgentStatus
+
+logger = logging.getLogger(__name__)
+
+class SearchAgent(Agent):
+    """Agent that searches for information"""
+    
+    def __init__(self, name: str, description: str = "Information search agent"):
+        """Initialize a new search agent"""
+        super().__init__(name=name, agent_type=AgentType.SEARCH, description=description)
+        self.search_history = []
+        self.data_sources = []
+    
+    def initialize(self, config: Dict[str, Any] = None) -> bool:
+        """Initialize the agent with configuration"""
+        if config:
+            if "data_sources" in config:
+                self.data_sources = config["data_sources"]
+                self.add_log_entry(f"Configured {len(self.data_sources)} data sources")
+        
+        return super().initialize(config)
+    
+    def add_data_source(self, name: str, source_type: str, connection_info: Dict[str, Any]) -> bool:
+        """Add a data source for searching"""
+        source = {
+            "name": name,
+            "type": source_type,
+            "connection_info": connection_info,
+            "enabled": True
+        }
+        self.data_sources.append(source)
+        self.add_log_entry(f"Added data source: {name} ({source_type})")
+        return True
+    
+    def search(self, query: str, filters: Dict[str, Any] = None) -> str:
+        """Perform a search operation"""
+        task_data = {
+            "query": query,
+            "filters": filters or {}
+        }
+        task_id = self.add_task("search", task_data)
+        self.add_log_entry(f"Search task created: '{query}'")
+        return task_id
+    
+    def get_search_history(self) -> List[Dict[str, Any]]:
+        """Get the history of searches"""
+        return self.search_history
+    
+    def _process_pending_tasks(self) -> None:
+        """Process pending search tasks"""
+        for task in self.tasks:
+            if task["status"] == "pending":
+                self.add_log_entry(f"Processing search: {task['data'].get('query', 'Unknown query')}")
+                task["status"] = "processing"
+                task["updated_at"] = time.time()
+                
+                try:
+                    query = task["data"].get("query", "")
+                    filters = task["data"].get("filters", {})
+                    
+                    # Here we would implement actual search logic
+                    # For now, just simulate search operation
+                    self.add_log_entry(f"Searching for: '{query}'")
+                    
+                    # Simulate searching across data sources
+                    results = []
+                    for source in self.data_sources:
+                        if source["enabled"]:
+                            self.add_log_entry(f"Searching in {source['name']}")
+                            
+                            # Simulate finding some results
+                            time.sleep(random.uniform(0.5, 1.5))
+                            
+                            # Generate some fake results
+                            source_results = []
+                            for i in range(random.randint(0, 5)):
+                                source_results.append({
+                                    "title": f"Result {i+1} for '{query}'",
+                                    "snippet": f"This is a sample result that matches '{query}'",
+                                    "relevance": random.uniform(0.1, 0.9),
+                                    "source": source["name"]
+                                })
+                            
+                            results.extend(source_results)
+                    
+                    # Sort by relevance
+                    results.sort(key=lambda x: x["relevance"], reverse=True)
+                    
+                    # Record search in history
+                    search_record = {
+                        "query": query,
+                        "timestamp": time.time(),
+                        "results_count": len(results)
+                    }
+                    self.search_history.append(search_record)
+                    
+                    # Update task with results
+                    task["status"] = "completed"
+                    task["completed_at"] = time.time()
+                    task["result"] = {
+                        "query": query,
+                        "results": results,
+                        "total": len(results)
+                    }
+                    task["updated_at"] = time.time()
+                    
+                    self.add_log_entry(f"Search completed: '{query}', found {len(results)} results")
+                except Exception as e:
+                    task["status"] = "failed"
+                    task["completed_at"] = time.time()
+                    task["result"] = str(e)
+                    task["updated_at"] = time.time()
+                    
+                    self.add_log_entry(f"Search failed: {str(e)}", level="ERROR")
+                
+                # Only process one task at a time
+                break

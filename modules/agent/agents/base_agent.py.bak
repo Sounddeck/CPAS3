@@ -1,0 +1,332 @@
+"""
+Base Agent class for CPAS3
+Provides foundation for all agent types
+"""
+
+import os
+import time
+import uuid
+import threading
+import logging
+from enum import Enum
+from typing import List, Dict, Any, Optional
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class AgentStatus(Enum):
+    """Enum for agent status"""
+    CREATED = "Created"
+    INITIALIZING = "Initializing"
+    RUNNING = "Running"
+    IDLE = "Idle"
+    PAUSED = "Paused"
+    STOPPING = "Stopping"
+    STOPPED = "Stopped"
+    ERROR = "Error"
+
+class AgentType(Enum):
+    """Enum for agent types"""
+    GENERIC = "Generic"
+    TASK = "Task Automation"
+    SEARCH = "Information Search"
+    CHAT = "Conversation"
+    WORKFLOW = "Workflow"
+    ANALYSIS = "Data Analysis"
+    CUSTOM = "Custom"
+
+class Agent:
+    """Base agent class that all specialized agents inherit from"""
+    
+    def __init__(self, name: str, agent_type: AgentType = AgentType.GENERIC, description: str = ""):
+        """Initialize a new agent"""
+        self.id = str(uuid.uuid4())
+        self.name = name
+        self.type = agent_type
+        self.description = description
+        self.status = AgentStatus.CREATED
+        self.created_at = time.time()
+        self.updated_at = time.time()
+        self.resources = {
+            "cpu": 0,
+            "memory": 0,
+            "disk": 0
+        }
+        self.config = {}
+        self.tasks = []
+        self.log_entries = []
+        self._thread = None
+        self._stop_event = threading.Event()
+        
+        self.add_log_entry(f"Agent '{name}' created")
+        logger.info(f"Created agent '{name}' with ID {self.id}")
+    
+    def initialize(self, config: Dict[str, Any] = None) -> bool:
+        """Initialize the agent with configuration parameters"""
+        try:
+            self.status = AgentStatus.INITIALIZING
+            self.add_log_entry("Initializing agent")
+            
+            if config:
+                self.config.update(config)
+            
+            # Do any necessary initialization here
+            logger.info(f"Initialized agent '{self.name}'")
+            
+            self.status = AgentStatus.IDLE
+            self.add_log_entry("Agent initialized")
+            self.updated_at = time.time()
+            return True
+        except Exception as e:
+            self.status = AgentStatus.ERROR
+            error_msg = f"Error initializing agent: {str(e)}"
+            self.add_log_entry(error_msg, level="ERROR")
+            logger.error(error_msg)
+            return False
+    
+    def start(self) -> bool:
+        """Start the agent"""
+        try:
+            if self.status in [AgentStatus.RUNNING]:
+                logger.info(f"Agent '{self.name}' is already running")
+                return True
+                
+            self.add_log_entry("Starting agent")
+            self._stop_event.clear()
+            
+            # Start the agent in a separate thread
+            self._thread = threading.Thread(target=self._run)
+            self._thread.daemon = True
+            self._thread.start()
+            
+            self.status = AgentStatus.RUNNING
+            self.add_log_entry("Agent started")
+            self.updated_at = time.time()
+            logger.info(f"Started agent '{self.name}'")
+            return True
+        except Exception as e:
+            self.status = AgentStatus.ERROR
+            error_msg = f"Error starting agent: {str(e)}"
+            self.add_log_entry(error_msg, level="ERROR")
+            logger.error(error_msg)
+            return False
+    
+    def stop(self) -> bool:
+        """Stop the agent"""
+        try:
+            if self.status not in [AgentStatus.RUNNING, AgentStatus.PAUSED]:
+                logger.info(f"Agent '{self.name}' is not running")
+                return True
+                
+            self.status = AgentStatus.STOPPING
+            self.add_log_entry("Stopping agent")
+            
+            # Signal the thread to stop
+            self._stop_event.set()
+            
+            # Wait for the thread to finish
+            if self._thread and self._thread.is_alive():
+                self._thread.join(timeout=5)
+            
+            self.status = AgentStatus.STOPPED
+            self.add_log_entry("Agent stopped")
+            self.resources = {"cpu": 0, "memory": 0, "disk": 0}
+            self.updated_at = time.time()
+            logger.info(f"Stopped agent '{self.name}'")
+            return True
+        except Exception as e:
+            self.status = AgentStatus.ERROR
+            error_msg = f"Error stopping agent: {str(e)}"
+            self.add_log_entry(error_msg, level="ERROR")
+            logger.error(error_msg)
+            return False
+    
+    def pause(self) -> bool:
+        """Pause the agent"""
+        try:
+            if self.status != AgentStatus.RUNNING:
+                logger.info(f"Agent '{self.name}' is not running, can't pause")
+                return False
+                
+            self.status = AgentStatus.PAUSED
+            self.add_log_entry("Agent paused")
+            self.updated_at = time.time()
+            logger.info(f"Paused agent '{self.name}'")
+            return True
+        except Exception as e:
+            self.status = AgentStatus.ERROR
+            error_msg = f"Error pausing agent: {str(e)}"
+            self.add_log_entry(error_msg, level="ERROR")
+            logger.error(error_msg)
+            return False
+    
+    def resume(self) -> bool:
+        """Resume a paused agent"""
+        try:
+            if self.status != AgentStatus.PAUSED:
+                logger.info(f"Agent '{self.name}' is not paused, can't resume")
+                return False
+                
+            self.status = AgentStatus.RUNNING
+            self.add_log_entry("Agent resumed")
+            self.updated_at = time.time()
+            logger.info(f"Resumed agent '{self.name}'")
+            return True
+        except Exception as e:
+            self.status = AgentStatus.ERROR
+            error_msg = f"Error resuming agent: {str(e)}"
+            self.add_log_entry(error_msg, level="ERROR")
+            logger.error(error_msg)
+            return False
+    
+    def add_task(self, task_name: str, task_data: Dict[str, Any] = None) -> str:
+        """Add a task to the agent's task list"""
+        task_id = str(uuid.uuid4())
+        task = {
+            "id": task_id,
+            "name": task_name,
+            "data": task_data or {},
+            "status": "pending",
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "completed_at": None,
+            "result": None
+        }
+        self.tasks.append(task)
+        self.add_log_entry(f"Task added: {task_name}")
+        return task_id
+    
+    def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Get a task by ID"""
+        for task in self.tasks:
+            if task["id"] == task_id:
+                return task
+        return None
+    
+    def update_task_status(self, task_id: str, status: str, result: Any = None) -> bool:
+        """Update the status of a task"""
+        task = self.get_task(task_id)
+        if not task:
+            return False
+            
+        task["status"] = status
+        task["updated_at"] = time.time()
+        
+        if status in ["completed", "failed"]:
+            task["completed_at"] = time.time()
+            task["result"] = result
+        
+        return True
+    
+    def add_log_entry(self, message: str, level: str = "INFO") -> None:
+        """Add a log entry to the agent's log"""
+        log_entry = {
+            "timestamp": time.time(),
+            "message": message,
+            "level": level
+        }
+        self.log_entries.append(log_entry)
+        
+        # Keep log size manageable by trimming old entries if needed
+        if len(self.log_entries) > 100:
+            self.log_entries = self.log_entries[-100:]
+    
+    def get_logs(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get recent log entries"""
+        return self.log_entries[-limit:] if self.log_entries else []
+    
+    def update_resources(self, cpu: float = None, memory: float = None, disk: float = None) -> None:
+        """Update resource usage information"""
+        if cpu is not None:
+            self.resources["cpu"] = cpu
+        if memory is not None:
+            self.resources["memory"] = memory
+        if disk is not None:
+            self.resources["disk"] = disk
+        self.updated_at = time.time()
+    
+    def get_status(self) -> Dict[str, Any]:
+        """Get the current agent status and information"""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "type": self.type.value,
+            "description": self.description,
+            "status": self.status.value,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "resources": self.resources,
+            "tasks": len(self.tasks),
+            "pending_tasks": sum(1 for task in self.tasks if task["status"] == "pending")
+        }
+        
+    def _run(self) -> None:
+        """Main execution method that runs when the agent is started"""
+        try:
+            self.add_log_entry("Agent main loop started")
+            
+            # This should be overridden by subclasses
+            # Default implementation just simulates some activity
+            while not self._stop_event.is_set():
+                # Check if paused
+                if self.status == AgentStatus.PAUSED:
+                    time.sleep(1)
+                    continue
+                    
+                # Process pending tasks
+                self._process_pending_tasks()
+                
+                # Simulate some resource usage
+                import random
+                self.update_resources(
+                    cpu=random.uniform(1, 10),
+                    memory=random.uniform(50, 150)
+                )
+                
+                # Sleep for a bit
+                time.sleep(2)
+                
+        except Exception as e:
+            self.status = AgentStatus.ERROR
+            error_msg = f"Error in agent execution: {str(e)}"
+            self.add_log_entry(error_msg, level="ERROR")
+            logger.error(error_msg)
+        finally:
+            if self.status != AgentStatus.ERROR:
+                self.status = AgentStatus.STOPPED
+            self.add_log_entry("Agent main loop ended")
+    
+    def _process_pending_tasks(self) -> None:
+        """Process any pending tasks"""
+        for task in self.tasks:
+            if task["status"] == "pending":
+                self.add_log_entry(f"Processing task: {task['name']}")
+                task["status"] = "processing"
+                task["updated_at"] = time.time()
+                
+                try:
+                    # Simulate task execution
+                    time.sleep(1)  # Placeholder for actual task execution
+                    result = f"Completed task {task['name']}"
+                    
+                    task["status"] = "completed"
+                    task["completed_at"] = time.time()
+                    task["result"] = result
+                    task["updated_at"] = time.time()
+                    
+                    self.add_log_entry(f"Task completed: {task['name']}")
+                except Exception as e:
+                    task["status"] = "failed"
+                    task["completed_at"] = time.time()
+                    task["result"] = str(e)
+                    task["updated_at"] = time.time()
+                    
+                    self.add_log_entry(f"Task failed: {task['name']} - {str(e)}", level="ERROR")
+                
+                # Only process one task at a time in this simple implementation
+                break
+    
+    def __str__(self) -> str:
+        """String representation of the agent"""
+        return f"Agent(name='{self.name}', type={self.type.value}, status={self.status.value})"
