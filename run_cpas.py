@@ -1,12 +1,13 @@
 import os
 import sys
 import logging
+import time # <<< ADDED: Import time >>>
 
 # --- Configure logging ---
 logging.basicConfig(
-    level=logging.DEBUG, # <<< CHANGED: Set level to DEBUG >>>
+    level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    stream=sys.stdout # Direct logs to the console
+    stream=sys.stdout
 )
 
 # Get the root logger
@@ -15,6 +16,8 @@ root_logger = logging.getLogger()
 # --- Now import your modules ---
 from modules.agents.agent_manager import AgentManager
 from modules.tools.file_system_tool import FileSystemTool
+# <<< CORRECTED: Import Task class from 'agents' (plural) >>>
+from modules.agents.task_queue import Task
 
 # --- Constants ---
 WORKSPACE_DIR = os.path.join(os.path.expanduser("~"), ".cpas3", "workspace")
@@ -29,7 +32,7 @@ if __name__ == "__main__":
         root_logger.info(f"Workspace directory ensured at: {WORKSPACE_DIR}")
     except OSError as e:
         root_logger.error(f"Failed to create workspace directory {WORKSPACE_DIR}: {e}", exc_info=True)
-        sys.exit(1) # Exit if workspace cannot be created
+        sys.exit(1)
 
     # --- Tool Configuration ---
     tool_config = {
@@ -62,12 +65,25 @@ if __name__ == "__main__":
         root_logger.critical(f"Failed to initialize AgentManager: {e}", exc_info=True)
         sys.exit(1)
 
-    # --- Example Usage (Placeholder) ---
-    root_logger.info("Application started successfully. Add main logic here.")
-    root_logger.info("Simulating work... (Ctrl+C to exit)")
+    # --- Create and add a test task ---
+    try:
+        if agent_manager and agent_manager.task_queue:
+            task_description = "List all files and directories in the root of the workspace."
+            new_task = Task(description=task_description)
+            agent_manager.task_queue.add_task(new_task)
+            root_logger.info(f"Added test task to queue: '{task_description}'")
+        else:
+            root_logger.error("Cannot add task: AgentManager or TaskQueue not available.")
+    except Exception as e:
+        root_logger.error(f"Failed to add test task: {e}", exc_info=True)
+
+    # --- Original Placeholder/Loop ---
+    root_logger.info("Application started successfully. Main loop running...")
+    root_logger.info("Agents will now process tasks from the queue. (Ctrl+C to exit)")
 
     try:
-        import time
+        # The agent threads are running in the background (started by AgentManager).
+        # This loop just keeps the main thread alive.
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
