@@ -1,265 +1,162 @@
 import os
 import json
 import logging
-from typing import Dict, Optional, List, Any
-import datetime
+import threading
+from typing import Dict, Any, Optional, List
 
-# Assuming AgentState and HistoryEntry models are defined elsewhere and importable if needed directly
-# from ..models import AgentState, HistoryEntry # Adjust import path as necessary
+# Assuming BaseAgent structure defines get_serializable_config and get_serializable_state
+# If not, imports might need adjustment or base class needs defining first.
+# We don't actually import BaseAgent here to avoid circular dependencies if AgentManager uses AgentStore.
+# We rely on the dictionary structures provided by the agents.
 
 logger = logging.getLogger(__name__)
 
-MANIFEST_FILE = "agent_manifest.json"
-HISTORY_SUFFIX = ".history.jsonl"
-STATE_SUFFIX = ".state.json"
-
 class AgentStore:
-    """Handles persistence of agent states and history to the file system."""
+    """
+    Handles persistence (saving and loading) of agent configurations and states.
+    Currently saves to JSON files in a specified directory.
+    """
+    def __init__(self, storage_path: str = "data/agents"):
+        self.storage_path = storage_path
+        self._ensure_storage_path_exists()
+        self._lock = threading.Lock() # Lock for thread-safe file operations
+        logger.info(f"AgentStore initialized. Storage path: '{self.storage_path}'")
 
-    def __init__(self, data_dir: str):
-        """
-        Initializes the AgentStore.
-
-        Args:
-            data_dir: The directory where agent data (manifest, states, history) will be stored.
-        """
-        self.data_dir = data_dir
-        self.manifest_path = os.path.join(self.data_dir, MANIFEST_FILE)
-        self._ensure_data_dir_exists()
-        logger.info(f"AgentStore initialized. Data directory: {self.data_dir}")
-
-    def _ensure_data_dir_exists(self):
-        """Creates the data directory if it doesn't exist."""
+    def _ensure_storage_path_exists(self):
+        """Creates the storage directory if it doesn't exist."""
         try:
-            os.makedirs(self.data_dir, exist_ok=True)
+            os.makedirs(self.storage_path, exist_ok=True)
+            logger.debug(f"Storage path '{self.storage_path}' ensured.")
         except OSError as e:
-            logger.error(f"Failed to create data directory {self.data_dir}: {e}", exc_info=True)
-            raise # Critical error if we can't create the data directory
+            logger.error(f"Failed to create agent storage directory '{self.storage_path}': {e}", exc_info=True)
+            raise # Re-raise the error as this is critical
 
-    # --- Manifest Management ---
+    def _get_agent_filepath(self, agent_id: str) -> str:
+        """Constructs the full filepath for an agent's data file."""
+        # Basic sanitization: remove path separators from agent_id to prevent traversal
+        safe_agent_id = agent_id.replace(os.path.sep, "_").replace("..", "_")
+        if not safe_agent_id:
+            raise ValueError("Agent ID cannot be empty or consist only of path separators.")
+        return os.path.join(self.storage_path, f"{safe_agent_id}.json")
 
-    def _load_manifest(self) -> Dict[str, str]:
-        """Loads the agent manifest (agent_id -> agent_name)."""
-        if not os.path.exists(self.manifest_path):
-            return {}
-        try:
-            with open(self.manifest_path, 'r') as f:
-                manifest_data = json.load(f)
-                if not isinstance(manifest_data, dict):
-                     logger.warning(f"Manifest file {self.manifest_path} does not contain a dictionary. Returning empty manifest.")
-                     return {}
-                return manifest_data
-        except json.JSONDecodeError:
-            logger.error(f"Error decoding JSON from manifest file {self.manifest_path}. Returning empty manifest.", exc_info=True)
-            return {}
-        except Exception as e:
-            logger.error(f"Failed to load manifest file {self.manifest_path}: {e}. Returning empty manifest.", exc_info=True)
-            return {}
-
-    def _save_manifest(self, manifest_data: Dict[str, str]):
-        """Saves the agent manifest."""
-        try:
-            with open(self.manifest_path, 'w') as f:
-                json.dump(manifest_data, f, indent=4)
-        except Exception as e:
-            logger.error(f"Failed to save manifest file {self.manifest_path}: {e}", exc_info=True)
-
-    def add_agent_to_manifest(self, agent_id: str, agent_name: str):
-        """Adds an agent's ID and name to the manifest."""
-        manifest = self._load_manifest()
-        if agent_id not in manifest:
-            manifest[agent_id] = agent_name
-            self._save_manifest(manifest)
-            logger.info(f"Agent {agent_id[:8]} ('{agent_name}') added to manifest.")
-        else:
-             # Optionally update name if it changed?
-             if manifest[agent_id] != agent_name:
-                  logger.warning(f"Agent {agent_id[:8]} already in manifest with name '{manifest[agent_id]}'. Updating name to '{agent_name}'.")
-                  manifest[agent_id] = agent_name
-                  self._save_manifest(manifest)
-
-
-    def remove_agent_from_manifest(self, agent_id: str):
-        """Removes an agent from the manifest."""
-        manifest = self._load_manifest()
-        if agent_id in manifest:
-            del manifest[agent_id]
-            self._save_manifest(manifest)
-            logger.info(f"Agent {agent_id[:8]} removed from manifest.")
-
-    def get_agent_name(self, agent_id: str) -> Optional[str]:
-        """Gets an agent's name from the manifest."""
-        manifest = self._load_manifest()
-        return manifest.get(agent_id)
-
-    def get_all_agent_ids(self) -> List[str]:
-         """Gets a list of all agent IDs from the manifest."""
-         manifest = self._load_manifest()
-         return list(manifest.keys())
-
-    # --- Agent State Management ---
-
-    def _get_state_file_path(self, agent_id: str) -> str:
-        """Constructs the file path for an agent's state file."""
-        return os.path.join(self.data_dir, f"{agent_id}{STATE_SUFFIX}")
-
-    def save_agent_state(self, agent_id: str, state_data: Any): # Accept AgentState or dict
+    def save_agent(self, agent_config: Dict[str, Any], agent_state: Dict[str, Any]):
         """
-        Saves an agent's state to a JSON file.
+        Saves the configuration and current state of an agent.
+        Overwrites the existing file for the agent if it exists.
 
         Args:
-            agent_id: The ID of the agent.
-            state_data: The agent's state (should be AgentState object or dict).
+            agent_config: Dictionary containing the agent's static configuration
+                          (e.g., name, type, LLM config, tools list). Should include 'agent_id'.
+            agent_state: Dictionary containing the agent's dynamic state
+                         (e.g., status, current task, simple memory state). Should include 'agent_id'.
         """
-        state_file_path = self._get_state_file_path(agent_id)
-        try:
-            # *** CONVERT AgentState TO DICT BEFORE SAVING ***
-            data_to_save = state_data
-            if hasattr(state_data, 'to_dict') and callable(state_data.to_dict):
-                 data_to_save = state_data.to_dict()
-            elif not isinstance(state_data, dict):
-                 logger.error(f"Cannot save state for agent {agent_id[:8]}: state_data is not a dict and has no to_dict() method.")
-                 return # Or raise error
+        agent_id = agent_config.get('agent_id')
+        if not agent_id:
+            logger.error("Cannot save agent: 'agent_id' missing from configuration.")
+            return
+        if agent_state.get('agent_id') != agent_id:
+             logger.error(f"Agent ID mismatch between config ('{agent_id}') and state ('{agent_state.get('agent_id')}'). Cannot save.")
+             return
 
-            with open(state_file_path, 'w') as f:
-                json.dump(data_to_save, f, indent=4)
-            # logger.debug(f"Saved state for agent {agent_id[:8]} to {os.path.basename(state_file_path)}")
-        except Exception as e:
-            logger.error(f"Error saving state for agent {agent_id[:8]} to {os.path.basename(state_file_path)}: {e}", exc_info=True)
+        filepath = self._get_agent_filepath(agent_id)
+        data_to_save = {
+            "config": agent_config,
+            "state": agent_state
+        }
 
-    def load_agent_state(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock: # Ensure thread safety during file write
+            try:
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    json.dump(data_to_save, f, indent=4, ensure_ascii=False)
+                logger.info(f"Agent '{agent_config.get('name', agent_id)}' (ID: {agent_id[:8]}) saved to '{filepath}'")
+            except (IOError, TypeError, ValueError) as e:
+                logger.error(f"Failed to save agent {agent_id[:8]} to '{filepath}': {e}", exc_info=True)
+            except Exception as e:
+                 logger.error(f"An unexpected error occurred while saving agent {agent_id[:8]}: {e}", exc_info=True)
+
+
+    def load_agent_data(self, agent_id: str) -> Optional[Dict[str, Any]]:
         """
-        Loads an agent's state from its JSON file.
+        Loads the configuration and state for a specific agent ID.
 
         Args:
-            agent_id: The ID of the agent.
+            agent_id: The unique identifier of the agent to load.
 
         Returns:
-            A dictionary representing the agent's state, or None if not found or error occurs.
+            A dictionary containing 'config' and 'state' keys if found, otherwise None.
         """
-        state_file_path = self._get_state_file_path(agent_id)
-        if not os.path.exists(state_file_path):
-            logger.warning(f"State file not found for agent {agent_id[:8]} at {os.path.basename(state_file_path)}")
+        filepath = self._get_agent_filepath(agent_id)
+        if not os.path.exists(filepath):
+            logger.debug(f"Agent data file not found for ID {agent_id[:8]} at '{filepath}'.")
             return None
-        try:
-            with open(state_file_path, 'r') as f:
-                state_data = json.load(f)
-                # Basic validation: ensure it's a dictionary
-                if not isinstance(state_data, dict):
-                    logger.error(f"State file {os.path.basename(state_file_path)} for agent {agent_id[:8]} does not contain a valid JSON object (dictionary).")
+
+        with self._lock: # Ensure thread safety during file read
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                # Basic validation
+                if 'config' in data and 'state' in data and data['config'].get('agent_id') == agent_id:
+                    logger.info(f"Agent '{data['config'].get('name', agent_id)}' (ID: {agent_id[:8]}) loaded from '{filepath}'")
+                    return data
+                else:
+                    logger.warning(f"Invalid or incomplete data found for agent {agent_id[:8]} in '{filepath}'. Skipping load.")
                     return None
-                # Add agent_id if it's missing (older format?)
-                if 'agent_id' not in state_data:
-                     state_data['agent_id'] = agent_id
-                return state_data
-        except json.JSONDecodeError:
-            logger.error(f"Error decoding JSON from state file {os.path.basename(state_file_path)} for agent {agent_id[:8]}.", exc_info=True)
-            return None
-        except Exception as e:
-            logger.error(f"Failed to load state file {os.path.basename(state_file_path)} for agent {agent_id[:8]}: {e}", exc_info=True)
-            return None
+            except (IOError, json.JSONDecodeError) as e:
+                logger.error(f"Failed to load or parse agent data for {agent_id[:8]} from '{filepath}': {e}", exc_info=True)
+                return None
+            except Exception as e:
+                 logger.error(f"An unexpected error occurred while loading agent {agent_id[:8]}: {e}", exc_info=True)
+                 return None
 
-    def remove_agent_state(self, agent_id: str):
-        """Removes an agent's state file."""
-        state_file_path = self._get_state_file_path(agent_id)
-        if os.path.exists(state_file_path):
-            try:
-                os.remove(state_file_path)
-                logger.info(f"Removed state file for agent {agent_id[:8]}.")
-            except OSError as e:
-                logger.error(f"Failed to remove state file {os.path.basename(state_file_path)} for agent {agent_id[:8]}: {e}", exc_info=True)
-
-    def get_all_agent_states(self) -> Dict[str, Optional[Dict[str, Any]]]:
-         """Loads states for all agents listed in the manifest."""
-         all_states = {}
-         agent_ids = self.get_all_agent_ids()
-         for agent_id in agent_ids:
-              state = self.load_agent_state(agent_id)
-              # We store None if loading fails to indicate an issue
-              all_states[agent_id] = state
-         return all_states
-
-
-    # --- Agent History Management (JSON Lines format) ---
-
-    def _get_history_file_path(self, agent_id: str) -> str:
-        """Constructs the file path for an agent's history file."""
-        return os.path.join(self.data_dir, f"{agent_id}{HISTORY_SUFFIX}")
-
-    def save_agent_history(self, agent_id: str, history_entries: List[Dict[str, Any]]):
-        """
-        Saves agent history entries to a JSON Lines file (overwrites existing file).
-
-        Args:
-            agent_id: The ID of the agent.
-            history_entries: A list of dictionaries, each representing a history entry.
-        """
-        history_file_path = self._get_history_file_path(agent_id)
+    def load_all_agent_data(self) -> List[Dict[str, Any]]:
+        """Loads data for all agents found in the storage directory."""
+        all_agent_data = []
+        logger.info(f"Loading all agents from '{self.storage_path}'...")
         try:
-            with open(history_file_path, 'w') as f:
-                for entry in history_entries:
-                    # Ensure entry is a dict before dumping
-                    if isinstance(entry, dict):
-                         json.dump(entry, f)
-                         f.write('\n')
-                    else:
-                         logger.warning(f"Skipping non-dict history entry for agent {agent_id[:8]}: {type(entry)}")
-            # logger.debug(f"Saved history for agent {agent_id[:8]} to {os.path.basename(history_file_path)}")
-        except Exception as e:
-            logger.error(f"Error saving history for agent {agent_id[:8]} to {os.path.basename(history_file_path)}: {e}", exc_info=True)
-
-    def append_history_entry(self, agent_id: str, history_entry: Dict[str, Any]):
-         """Appends a single history entry to the agent's history file."""
-         history_file_path = self._get_history_file_path(agent_id)
-         if not isinstance(history_entry, dict):
-              logger.error(f"Cannot append history entry for agent {agent_id[:8]}: entry is not a dictionary.")
-              return
-         try:
-              with open(history_file_path, 'a') as f:
-                   json.dump(history_entry, f)
-                   f.write('\n')
-              # logger.debug(f"Appended history entry for agent {agent_id[:8]}.")
-         except Exception as e:
-              logger.error(f"Error appending history entry for agent {agent_id[:8]} to {os.path.basename(history_file_path)}: {e}", exc_info=True)
+            # List only .json files to avoid loading other potential files/dirs
+            agent_files = [f for f in os.listdir(self.storage_path)
+                           if os.path.isfile(os.path.join(self.storage_path, f)) and f.endswith('.json')]
+        except FileNotFoundError:
+            logger.warning(f"Agent storage directory '{self.storage_path}' not found during load_all. Returning empty list.")
+            return []
+        except OSError as e:
+            logger.error(f"Error listing agent files in '{self.storage_path}': {e}", exc_info=True)
+            return []
 
 
-    def load_agent_history(self, agent_id: str) -> List[Dict[str, Any]]:
+        for filename in agent_files:
+            agent_id = filename[:-5] # Remove '.json' extension
+            agent_data = self.load_agent_data(agent_id) # Use existing load method (handles locking)
+            if agent_data:
+                all_agent_data.append(agent_data)
+
+        logger.info(f"Loaded data for {len(all_agent_data)} agents.")
+        return all_agent_data
+
+    def delete_agent(self, agent_id: str) -> bool:
         """
-        Loads agent history from its JSON Lines file.
+        Deletes the data file associated with an agent ID.
 
         Args:
-            agent_id: The ID of the agent.
+            agent_id: The unique identifier of the agent to delete.
 
         Returns:
-            A list of dictionaries representing the history entries, or an empty list if not found/error.
+            True if the file was successfully deleted, False otherwise.
         """
-        history_file_path = self._get_history_file_path(agent_id)
-        if not os.path.exists(history_file_path):
-            return []
-        history = []
-        try:
-            with open(history_file_path, 'r') as f:
-                for line in f:
-                    if line.strip(): # Avoid empty lines
-                        try:
-                            entry = json.loads(line)
-                            if isinstance(entry, dict):
-                                 history.append(entry)
-                            else:
-                                 logger.warning(f"Skipping non-dict entry in history file {os.path.basename(history_file_path)} for agent {agent_id[:8]}: {line.strip()}")
-                        except json.JSONDecodeError:
-                            logger.error(f"Error decoding JSON line in history file {os.path.basename(history_file_path)} for agent {agent_id[:8]}: {line.strip()}", exc_info=True)
-            return history
-        except Exception as e:
-            logger.error(f"Failed to load history file {os.path.basename(history_file_path)} for agent {agent_id[:8]}: {e}", exc_info=True)
-            return []
+        filepath = self._get_agent_filepath(agent_id)
+        if not os.path.exists(filepath):
+            logger.warning(f"Cannot delete agent {agent_id[:8]}: File not found at '{filepath}'.")
+            return False
 
-    def remove_agent_history(self, agent_id: str):
-        """Removes an agent's history file."""
-        history_file_path = self._get_history_file_path(agent_id)
-        if os.path.exists(history_file_path):
+        with self._lock: # Ensure thread safety during file deletion
             try:
-                os.remove(history_file_path)
-                logger.info(f"Removed history file for agent {agent_id[:8]}.")
+                os.remove(filepath)
+                logger.info(f"Agent data for ID {agent_id[:8]} deleted from '{filepath}'.")
+                return True
             except OSError as e:
-                logger.error(f"Failed to remove history file {os.path.basename(history_file_path)} for agent {agent_id[:8]}: {e}", exc_info=True)
+                logger.error(f"Failed to delete agent data file '{filepath}': {e}", exc_info=True)
+                return False
+            except Exception as e:
+                 logger.error(f"An unexpected error occurred while deleting agent {agent_id[:8]}: {e}", exc_info=True)
+                 return False
+

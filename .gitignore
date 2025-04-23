@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Virtual environment
+venv/
+*.venv/
+env/
+ENV/
+
+# Backups / Editor files
+# Backups / Editor files
+*.swp
+*.swo
+*.pyfd
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Specific backup directory (optional, but good based on your status)
+modules/agent_backup_20250422/
+
+# IDE files (examples, add yours if needed)
+.idea/
+.vscode/
