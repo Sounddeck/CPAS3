@@ -1,0 +1,390 @@
+"""
+CPAS3 Desktop Application
+Main entry point for CPAS3 desktop interface
+"""
+import sys
+import os
+import logging
+import uuid
+from datetime import datetime
+from typing import Dict, Any, Optional
+
+# Qt imports
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QWidget,
+    QTextEdit, QLineEdit, QPushButton, QLabel, QSplitter, QComboBox,
+    QMessageBox, QTabWidget, QGroupBox, QCheckBox
+)
+from PyQt6.QtCore import Qt, pyqtSignal, QThread, QSize
+from PyQt6.QtGui import QIcon, QTextCursor, QAction, QFont
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Local imports
+from src.agents.react_agent import ReActAgent
+from src.memory.structured_memory import StructuredMemory
+from src.tools.tool_manager import ToolManager
+from src.orchestration.main_graph import MainGraph
+from src.ui.memory_browser import MemoryBrowser
+
+# Apply memory patch to fix issues
+from src.agents.react_agent_memory_fix import apply_memory_patch
+apply_memory_patch()
+
+
+class ProcessingThread(QThread):
+    """Thread for processing user input to avoid UI blocking"""
+    response_ready = pyqtSignal(dict)
+    
+    def __init__(self, main_graph: MainGraph, user_input: str):
+        """Initialize processing thread"""
+        super().__init__()
+        self.main_graph = main_graph
+        self.user_input = user_input
+    
+    def run(self):
+        """Run the main processing logic"""
+        try:
+            result = self.main_graph.run(self.user_input)
+            self.response_ready.emit(result)
+        except Exception as e:
+            logger.error(f"Error in processing thread: {e}", exc_info=True)
+            # Return error response
+            self.response_ready.emit({
+                "status": "error",
+                "response": f"Error processing request: {str(e)}",
+                "error": str(e)
+            })
+
+class CPASDesktop(QMainWindow):
+    """Main desktop application for CPAS3"""
+    
+    def __init__(self):
+        """Initialize the desktop application"""
+        super().__init__()
+        
+        # Set up application metadata
+        self.setWindowTitle("CPAS3 - Cognitive Processing Automation System")
+        self.resize(1000, 700)
+        
+        # Initialize MongoDB connection settings
+        self.mongo_uri = "mongodb://localhost:27017/"
+        self.db_name = "cpas3_memory"
+        
+        # Create a unique session ID for this run
+        self.session_id = f"session_{uuid.uuid4().hex[:8]}"
+        
+        # Initialize components
+        self.init_components()
+        
+        # Set up UI
+        self.init_ui()
+        
+        # Initialize processing thread to None
+        self.processing_thread = None
+        
+        logger.info("CPAS Desktop initialized")
+    
+    def init_components(self):
+        """Initialize the core components"""
+        try:
+            # Initialize memory
+            self.structured_memory = StructuredMemory(
+                connection_uri=self.mongo_uri,
+                db_name=self.db_name
+            )
+            
+            # Initialize tool manager
+            self.tool_manager = ToolManager()
+            
+            # Initialize agent with Ollama
+            self.react_agent = ReActAgent(
+                model_name="llama3:latest",  # Change to your model
+                structured_memory=self.structured_memory,
+                tool_manager=self.tool_manager,
+                mongo_uri=self.mongo_uri,
+                session_id=self.session_id
+            )
+            
+            # Initialize main orchestration graph
+            self.main_graph = MainGraph(
+                react_agent=self.react_agent,
+                structured_memory=self.structured_memory,
+                mongo_uri=self.mongo_uri
+            )
+            
+            logger.info(f"Application components initialized with model: llama3:latest")
+            logger.info(f"Using MongoDB for persistence with session ID: {self.session_id}")
+            
+        except Exception as e:
+            logger.error(f"Error initializing components: {e}", exc_info=True)
+            QMessageBox.critical(self, "Initialization Error", 
+                                f"Failed to initialize components: {str(e)}")
+    
+    def init_ui(self):
+        """Initialize the user interface"""
+        # Create central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # Create main layout
+        main_layout = QVBoxLayout(central_widget)
+        
+        # Create a header with status info
+        header_layout = QHBoxLayout()
+        header_label = QLabel("CPAS3 - Cognitive Processing Automation System")
+        header_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        status_label = QLabel("Status:")
+        self.status_indicator = QLabel("Ready")
+        self.status_indicator.setStyleSheet("color: green;")
+        model_label = QLabel("Model:")
+        self.model_indicator = QLabel("llama3:latest")
+        
+        header_layout.addWidget(header_label)
+        header_layout.addStretch()
+        header_layout.addWidget(status_label)
+        header_layout.addWidget(self.status_indicator)
+        header_layout.addWidget(model_label)
+        header_layout.addWidget(self.model_indicator)
+        
+        # Create conversation display
+        self.conversation_display = QTextEdit()
+        self.conversation_display.setReadOnly(True)
+        self.conversation_display.setStyleSheet("""
+            QTextEdit {
+                background-color: #f8f8f8;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                padding: 8px;
+                font-family: Arial, sans-serif;
+            }
+        """)
+        
+        # Create input area
+        input_layout = QHBoxLayout()
+        self.input_field = QLineEdit()
+        self.input_field.setPlaceholderText("Type your message here...")
+        self.input_field.returnPressed.connect(self.process_input)
+        self.send_button = QPushButton("Send")
+        self.send_button.clicked.connect(self.process_input)
+        
+        input_layout.addWidget(self.input_field)
+        input_layout.addWidget(self.send_button)
+        
+        # Add widgets to main layout
+        main_layout.addLayout(header_layout)
+        main_layout.addWidget(self.conversation_display, 1)
+        main_layout.addLayout(input_layout)
+        
+        # Create and add a status bar
+        self.statusBar().showMessage("Ready")
+        
+        # Create menu bar
+        self.create_menu_bar()
+    
+    def create_menu_bar(self):
+        """Create the application menu bar"""
+        # Create menu bar
+        menu_bar = self.menuBar()
+        
+        # File menu
+        file_menu = menu_bar.addMenu("File")
+        
+        # New chat action
+        new_chat_action = QAction("New Chat", self)
+        new_chat_action.triggered.connect(self.new_chat)
+        file_menu.addAction(new_chat_action)
+        
+        # Export chat action
+        export_chat_action = QAction("Export Chat", self)
+        export_chat_action.triggered.connect(self.export_chat)
+        file_menu.addAction(export_chat_action)
+        
+        file_menu.addSeparator()
+        
+        # Exit action
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+        
+        # Tools menu
+        tools_menu = menu_bar.addMenu("Tools")
+        
+        # Memory browser action
+        memory_browser_action = QAction("Memory Browser", self)
+        memory_browser_action.triggered.connect(self.open_memory_browser)
+        tools_menu.addAction(memory_browser_action)
+        
+        # Settings menu
+        settings_menu = menu_bar.addMenu("Settings")
+        
+        # Model selection
+        model_action = QAction("Change Model", self)
+        model_action.triggered.connect(self.change_model)
+        settings_menu.addAction(model_action)
+        
+        # Help menu
+        help_menu = menu_bar.addMenu("Help")
+        
+        # About action
+        about_action = QAction("About CPAS3", self)
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
+    
+    def process_input(self):
+        """Process user input and get response"""
+        user_input = self.input_field.text().strip()
+        
+        # Clear input field
+        self.input_field.clear()
+        
+        if not user_input:
+            return
+        
+        # Update UI
+        self.add_message(user_input, "user")
+        self.status_indicator.setText("Processing...")
+        self.status_indicator.setStyleSheet("color: orange;")
+        self.statusBar().showMessage("Processing request...")
+        
+        # Disable input during processing
+        self.input_field.setDisabled(True)
+        self.send_button.setDisabled(True)
+        
+        # Start processing thread
+        self.processing_thread = ProcessingThread(self.main_graph, user_input)
+        self.processing_thread.response_ready.connect(self.handle_response)
+        self.processing_thread.start()
+    
+    def handle_response(self, result: Dict[str, Any]):
+        """Handle the response from the agent"""
+        # Extract response
+        response = result.get("response", "No response generated")
+        status = result.get("status", "error")
+        error = result.get("error", "")
+        
+        # Add response to conversation display
+        self.add_message(response, "assistant")
+        
+        # Update status
+        if status == "success":
+            self.status_indicator.setText("Ready")
+            self.status_indicator.setStyleSheet("color: green;")
+            self.statusBar().showMessage("Request completed successfully")
+        else:
+            self.status_indicator.setText("Error")
+            self.status_indicator.setStyleSheet("color: red;")
+            self.statusBar().showMessage(f"Error: {error}")
+        
+        # Re-enable input
+        self.input_field.setDisabled(False)
+        self.send_button.setDisabled(False)
+        self.input_field.setFocus()
+    
+    def add_message(self, message: str, role: str):
+        """Add a message to the conversation display"""
+        cursor = self.conversation_display.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        
+        # Format based on role
+        if role == "user":
+            self.conversation_display.append("<b>You:</b>")
+            self.conversation_display.append(message)
+        else:
+            self.conversation_display.append("<b>CPAS3:</b>")
+            self.conversation_display.append(message)
+        
+        # Add spacing
+        self.conversation_display.append("")
+        
+        # Scroll to bottom
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.conversation_display.setTextCursor(cursor)
+    
+    def new_chat(self):
+        """Start a new chat session"""
+        reply = QMessageBox.question(
+            self, "New Chat", 
+            "Are you sure you want to start a new chat? Current conversation will be cleared.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            # Clear conversation display
+            self.conversation_display.clear()
+            
+            # Create a new session ID
+            self.session_id = f"session_{uuid.uuid4().hex[:8]}"
+            
+            # Update agent with new session ID
+            self.react_agent.session_id = self.session_id
+            
+            # Update status
+            self.statusBar().showMessage(f"New chat session started with ID: {self.session_id}")
+    
+    def export_chat(self):
+        """Export the current chat conversation"""
+        # TODO: Implement chat export functionality
+        QMessageBox.information(self, "Not Implemented", 
+                               "Chat export functionality is not yet implemented.")
+    
+    def open_memory_browser(self):
+        """Open the memory browser window"""
+        try:
+            memory_browser = MemoryBrowser(
+                mongo_uri=self.mongo_uri,
+                db_name=self.db_name
+            )
+            memory_browser.show()
+        except Exception as e:
+            logger.error(f"Error opening memory browser: {e}", exc_info=True)
+            QMessageBox.critical(self, "Error", 
+                                f"Failed to open memory browser: {str(e)}")
+    
+    def change_model(self):
+        """Change the LLM model"""
+        # TODO: Implement model changing functionality
+        QMessageBox.information(self, "Not Implemented", 
+                               "Model changing functionality is not yet implemented.")
+    
+    def show_about(self):
+        """Show about dialog"""
+        QMessageBox.about(
+            self, 
+            "About CPAS3",
+            "<h3>CPAS3 - Cognitive Processing Automation System</h3>"
+            "<p>Version: 0.1.0</p>"
+            "<p>A modular and extensible system for cognitive automation tasks.</p>"
+            "<p>Built with Python, LangChain, and LLM integration.</p>"
+        )
+    
+    def closeEvent(self, event):
+        """Handle window close event"""
+        reply = QMessageBox.question(
+            self, 'Exit Confirmation', 
+            'Are you sure you want to exit CPAS3?',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            # Clean up resources
+            # TODO: Implement proper cleanup
+            logger.info("CPAS Desktop shutting down")
+            event.accept()
+        else:
+            event.ignore()
+
+if __name__ == "__main__":
+    # Create application
+    app = QApplication(sys.argv)
+    window = CPASDesktop()
+    window.show()
+    
+    # Run application
+    sys.exit(app.exec())

@@ -1,0 +1,11 @@
+{
+    "module_id": "chat_module",
+    "name": "Chat",
+    "description": "Conversation interface with AI models",
+    "version": "1.0.0",
+    "author": "CPAS Team",
+    "main_module": "chat_window",
+    "main_class": "ChatModule",
+    "icon": "assets/chat_icon.svg",
+    "dependencies": []
+}

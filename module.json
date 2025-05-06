@@ -1,0 +1,6 @@
+{
+  "name": "ExampleModule",
+  "entry": "main.py",
+  "class": "ModuleMain",
+  "description": "Basic example module"
+}

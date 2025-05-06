@@ -1,0 +1,18 @@
+# Core dependencies
+langchain>=0.1.0
+langchain-community>=0.0.13
+langgraph>=0.0.20
+python-dotenv>=1.0.0
+pydantic>=2.5.2
+
+# UI dependencies
+PyQt6>=6.6.1
+
+# Database and storage
+pymongo>=4.5.0
+
+# Operational dependencies
+psutil>=5.9.6
+
+# Optional: for monitoring and tracing
+langsmith>=0.0.69
