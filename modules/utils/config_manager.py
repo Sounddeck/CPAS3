@@ -56,10 +56,25 @@ class ConfigManager:
         try:
             if os.path.exists(self.config_file_path):
                 with open(self.config_file_path, 'r') as f:
-                    loaded_data = json.load(f)
+                    content = f.read()
+                    
+                    # Use robust JSON parsing to handle formatting issues
+                    try:
+                        from .json_helper import JSONHelper
+                        loaded_data = JSONHelper.parse_json_robust(content)
+                        logger.info(f"Loaded configuration using robust parsing from {self.config_file_path}")
+                    except ImportError:
+                        # Fallback to standard parsing if json_helper is not available
+                        logger.debug("json_helper not available, using standard JSON parsing")
+                        loaded_data = json.loads(content)
+                        logger.info(f"Loaded configuration using standard parsing from {self.config_file_path}")
+                    except Exception as e:
+                        logger.warning(f"Robust JSON parsing failed, trying standard parsing: {e}")
+                        loaded_data = json.loads(content)
+                        logger.info(f"Loaded configuration using standard parsing from {self.config_file_path}")
+                    
                     # Merge loaded data with defaults to ensure all keys exist
                     self.config_data = {**DEFAULT_CONFIG, **loaded_data}
-                    logger.info(f"Loaded configuration from {self.config_file_path}")
                     # Optionally: Check for missing keys compared to DEFAULT_CONFIG and add them
                     self._update_config_with_defaults()
 
